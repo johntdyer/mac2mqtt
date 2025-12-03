@@ -1,11 +1,12 @@
+// main
 package main
 
 import (
 	"fmt"
-	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"log"
 	"os"
+
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -13,18 +14,29 @@ import (
 	"sync"
 	"time"
 
+	mediadevices "github.com/antonfisher/go-media-devices-state"
+	"github.com/elastic/gosigar"
+	"github.com/polera/publicip"
+	"gopkg.in/yaml.v2"
+
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 var hostname string
 
 type config struct {
-	Ip              string `yaml:"mqtt_ip"`
-	Port            string `yaml:"mqtt_port"`
-	User            string `yaml:"mqtt_user"`
-	Password        string `yaml:"mqtt_password"`
-	VolumeInterval  int    `yaml:"volume_interval"`
-	BatteryInterval int    `yaml:"battery_interval"`
+	MqttIP           string `yaml:"mqtt_ip"`
+	Port             string `yaml:"mqtt_port"`
+	User             string `yaml:"mqtt_user"`
+	Password         string `yaml:"mqtt_password"`
+	VolumeInterval   int    `yaml:"volume_interval"`
+	BatteryInterval  int    `yaml:"battery_interval"`
+	CPUInterval      int    `yaml:"cpu_interval"`
+	MemoryInterval   int    `yaml:"memory_interval"`
+	UptimeInterval   int    `yaml:"uptime_interval"`
+	PublicIPInterval int    `yaml:"publicip_interval"`
+	DiskInterval     int    `yaml:"disk_interval"`
+	MediaInterval    int    `yaml:"media_interval"`
 }
 
 func (c *config) getConfig() *config {
@@ -39,7 +51,7 @@ func (c *config) getConfig() *config {
 		log.Fatal(err)
 	}
 
-	if c.Ip == "" {
+	if c.MqttIP == "" {
 		log.Fatal("Must specify mqtt_ip in mac2mqtt.yaml")
 	}
 
@@ -53,6 +65,32 @@ func (c *config) getConfig() *config {
 
 	if c.Password == "" {
 		log.Fatal("Must specify mqtt_password in mac2mqtt.yaml")
+	}
+
+	// Set default intervals if not specified
+	if c.VolumeInterval == 0 {
+		c.VolumeInterval = 5
+	}
+	if c.BatteryInterval == 0 {
+		c.BatteryInterval = 60
+	}
+	if c.CPUInterval == 0 {
+		c.CPUInterval = 10
+	}
+	if c.MemoryInterval == 0 {
+		c.MemoryInterval = 10
+	}
+	if c.UptimeInterval == 0 {
+		c.UptimeInterval = 60
+	}
+	if c.PublicIPInterval == 0 {
+		c.PublicIPInterval = 300
+	}
+	if c.DiskInterval == 0 {
+		c.DiskInterval = 60
+	}
+	if c.MediaInterval == 0 {
+		c.MediaInterval = 5
 	}
 
 	return c
@@ -187,7 +225,7 @@ func commandRunShortcut(shortcut string) {
 	runCommand("shortcuts", "run", shortcut)
 }
 
-var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
+var _ mqtt.MessageHandler = func(_ mqtt.Client, msg mqtt.Message) {
 	log.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
 }
 
@@ -202,7 +240,7 @@ var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
 	listen(client, getTopicPrefix()+"/command/#")
 }
 
-var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
+var connectLostHandler mqtt.ConnectionLostHandler = func(_ mqtt.Client, err error) {
 	log.Printf("Disconnected from MQTT: %v", err)
 }
 
@@ -347,7 +385,6 @@ func updateInputVolume(client mqtt.Client) {
 	token.Wait()
 }
 
-
 func updateMute(client mqtt.Client) {
 	token := client.Publish(getTopicPrefix()+"/status/mute", 0, false, strconv.FormatBool(getMuteStatus()))
 	token.Wait()
@@ -372,6 +409,194 @@ func updateBattery(client mqtt.Client) {
 	token.Wait()
 }
 
+func getCPUUsage() string {
+	cpu1stCheck := gosigar.Cpu{}
+	err := cpu1stCheck.Get()
+	if err != nil {
+		log.Printf("Error getting CPU info: %v", err)
+		return "0"
+	}
+
+	// Calculate total and idle time
+	total := cpu1stCheck.User + cpu1stCheck.Nice + cpu1stCheck.Sys + cpu1stCheck.Idle + cpu1stCheck.Wait
+	idle := cpu1stCheck.Idle
+
+	// Sleep briefly to get a second reading for calculation
+	time.Sleep(500 * time.Millisecond)
+
+	cpu2ndCheck := gosigar.Cpu{}
+	err = cpu2ndCheck.Get()
+	if err != nil {
+		log.Printf("Error getting CPU info: %v", err)
+		return "0"
+	}
+
+	total2 := cpu2ndCheck.User + cpu2ndCheck.Nice + cpu2ndCheck.Sys + cpu2ndCheck.Idle + cpu2ndCheck.Wait
+	idle2 := cpu2ndCheck.Idle
+
+	// Calculate the difference
+	totalDelta := total2 - total
+	idleDelta := idle2 - idle
+
+	if totalDelta == 0 {
+		return "0"
+	}
+
+	// Calculate usage percentage
+	cpuUsage := 100.0 * (float64(totalDelta) - float64(idleDelta)) / float64(totalDelta)
+	return fmt.Sprintf("%.2f", cpuUsage)
+}
+
+func updateCPU(client mqtt.Client) {
+	token := client.Publish(getTopicPrefix()+"/status/cpu", 0, false, getCPUUsage())
+	token.Wait()
+}
+
+func getMemoryUsage() (string, string, string) {
+	mem := gosigar.Mem{}
+	err := mem.Get()
+	if err != nil {
+		log.Printf("Error getting memory info: %v", err)
+		return "0", "0", "0"
+	}
+
+	// Convert bytes to GB for readability
+	totalGB := float64(mem.Total) / (1024 * 1024 * 1024)
+	usedGB := float64(mem.Used) / (1024 * 1024 * 1024)
+	freeGB := float64(mem.Free) / (1024 * 1024 * 1024)
+
+	return fmt.Sprintf("%.2f", totalGB), fmt.Sprintf("%.2f", usedGB), fmt.Sprintf("%.2f", freeGB)
+}
+
+func updateMemory(client mqtt.Client) {
+	total, used, free := getMemoryUsage()
+	token := client.Publish(getTopicPrefix()+"/status/memory/total", 0, false, total)
+	token = client.Publish(getTopicPrefix()+"/status/memory/used", 0, false, used)
+	token = client.Publish(getTopicPrefix()+"/status/memory/free", 0, false, free)
+	token.Wait()
+}
+
+func getUptime() (string, string) {
+	uptime := gosigar.Uptime{}
+	err := uptime.Get()
+	if err != nil {
+		log.Printf("Error getting uptime: %v", err)
+		return "unknown", "0"
+	}
+
+	// Convert seconds to milliseconds
+	uptimeMs := fmt.Sprintf("%d", int(uptime.Length*1000))
+
+	// Convert seconds to a human-readable format
+	totalSeconds := int(uptime.Length)
+	days := totalSeconds / 86400
+	hours := (totalSeconds % 86400) / 3600
+	minutes := (totalSeconds % 3600) / 60
+
+	var uptimeHuman string
+	if days > 0 {
+		uptimeHuman = fmt.Sprintf("%d days, %d:%02d", days, hours, minutes)
+	} else {
+		uptimeHuman = fmt.Sprintf("%d:%02d", hours, minutes)
+	}
+
+	return uptimeHuman, uptimeMs
+}
+
+func updateUptime(client mqtt.Client) {
+	uptimeHuman, uptimeMs := getUptime()
+	token := client.Publish(getTopicPrefix()+"/status/uptime/human", 0, false, uptimeHuman)
+	token = client.Publish(getTopicPrefix()+"/status/uptime/ms", 0, false, uptimeMs)
+	token.Wait()
+}
+
+func getPublicIP() string {
+	ip, err := publicip.GetIP()
+	if err != nil {
+		log.Printf("Error getting public IP: %v", err)
+		return "unknown"
+	}
+	return ip
+}
+
+func updatePublicIP(client mqtt.Client) {
+	token := client.Publish(getTopicPrefix()+"/status/publicip", 0, false, getPublicIP())
+	token.Wait()
+}
+
+func getDiskUsage() (string, string, string, string) {
+	fslist := gosigar.FileSystemList{}
+	err := fslist.Get()
+	if err != nil {
+		log.Printf("Error getting disk info: %v", err)
+		return "0", "0", "0", "0"
+	}
+
+	// Find the root filesystem
+	for _, fs := range fslist.List {
+		if fs.DirName == "/" {
+			usage := gosigar.FileSystemUsage{}
+			err := usage.Get(fs.DirName)
+			if err != nil {
+				log.Printf("Error getting disk usage for /: %v", err)
+				return "0", "0", "0", "0"
+			}
+
+			// Calculate percentages
+			percentUsed := usage.UsePercent() * 100
+			percentFree := 100.0 - percentUsed
+
+			// Calculate bytes (usage provides values in KB, convert to bytes)
+			bytesUsed := usage.Used * 1024
+			bytesFree := usage.Avail * 1024
+
+			return fmt.Sprintf("%.2f", percentUsed),
+				fmt.Sprintf("%.2f", percentFree),
+				fmt.Sprintf("%d", bytesUsed),
+				fmt.Sprintf("%d", bytesFree)
+		}
+	}
+
+	return "0", "0", "0", "0"
+}
+
+func updateDisk(client mqtt.Client) {
+	percentUsed, percentFree, bytesUsed, bytesFree := getDiskUsage()
+	token := client.Publish(getTopicPrefix()+"/status/disk/percent_used", 0, false, percentUsed)
+	token = client.Publish(getTopicPrefix()+"/status/disk/percent_free", 0, false, percentFree)
+	token = client.Publish(getTopicPrefix()+"/status/disk/bytes_used", 0, false, bytesUsed)
+	token = client.Publish(getTopicPrefix()+"/status/disk/bytes_free", 0, false, bytesFree)
+	token.Wait()
+}
+
+func getMediaDevicesState() (string, string) {
+	micOn := "false"
+	cameraOn := "false"
+
+	isMicOn, err := mediadevices.IsMicrophoneOn()
+	if err != nil {
+		log.Printf("Error getting microphone state: %v", err)
+	} else if isMicOn {
+		micOn = "true"
+	}
+
+	isCameraOn, err := mediadevices.IsCameraOn()
+	if err != nil {
+		log.Printf("Error getting camera state: %v", err)
+	} else if isCameraOn {
+		cameraOn = "true"
+	}
+
+	return micOn, cameraOn
+}
+
+func updateMediaDevices(client mqtt.Client) {
+	micOn, cameraOn := getMediaDevicesState()
+	token := client.Publish(getTopicPrefix()+"/status/media/microphone", 0, false, micOn)
+	token = client.Publish(getTopicPrefix()+"/status/media/camera", 0, false, cameraOn)
+	token.Wait()
+}
+
 func main() {
 
 	log.Println("Started")
@@ -382,10 +607,30 @@ func main() {
 	var wg sync.WaitGroup
 
 	hostname = getHostname()
-	mqttClient := getMQTTClient(c.Ip, c.Port, c.User, c.Password)
+	mqttClient := getMQTTClient(c.MqttIP, c.Port, c.User, c.Password)
+
+	// Run all updates once on startup
+	log.Println("Running initial updates...")
+	updateVolume(mqttClient)
+	updateInputVolume(mqttClient)
+	updateMute(mqttClient)
+	updateBattery(mqttClient)
+	updateCPU(mqttClient)
+	updateMemory(mqttClient)
+	updateUptime(mqttClient)
+	updatePublicIP(mqttClient)
+	updateDisk(mqttClient)
+	updateMediaDevices(mqttClient)
+	log.Println("Initial updates complete")
 
 	volumeTicker := time.NewTicker(time.Duration(c.VolumeInterval) * time.Second)
 	batteryTicker := time.NewTicker(time.Duration(c.BatteryInterval) * time.Second)
+	cpuTicker := time.NewTicker(time.Duration(c.CPUInterval) * time.Second)
+	memoryTicker := time.NewTicker(time.Duration(c.MemoryInterval) * time.Second)
+	uptimeTicker := time.NewTicker(time.Duration(c.UptimeInterval) * time.Second)
+	publicipTicker := time.NewTicker(time.Duration(c.PublicIPInterval) * time.Second)
+	diskTicker := time.NewTicker(time.Duration(c.DiskInterval) * time.Second)
+	mediaTicker := time.NewTicker(time.Duration(c.MediaInterval) * time.Second)
 
 	wg.Add(1)
 	go func() {
@@ -398,6 +643,24 @@ func main() {
 
 			case _ = <-batteryTicker.C:
 				updateBattery(mqttClient)
+
+			case _ = <-cpuTicker.C:
+				updateCPU(mqttClient)
+
+			case _ = <-memoryTicker.C:
+				updateMemory(mqttClient)
+
+			case _ = <-uptimeTicker.C:
+				updateUptime(mqttClient)
+
+			case _ = <-publicipTicker.C:
+				updatePublicIP(mqttClient)
+
+			case _ = <-diskTicker.C:
+				updateDisk(mqttClient)
+
+			case _ = <-mediaTicker.C:
+				updateMediaDevices(mqttClient)
 			}
 		}
 	}()
