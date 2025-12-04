@@ -1,3 +1,4 @@
+// main - obigatory main comment for package to appease the linting gods
 package main
 
 import (
@@ -85,6 +86,7 @@ type MediaInfo struct {
 	Position    int    `json:"position"` // in seconds
 }
 
+// Display represents the the display information
 type Display struct {
 	UUID               string `json:"UUID"`
 	AlphanumericSerial string `json:"alphanumericSerial"`
@@ -118,14 +120,15 @@ type Application struct {
 }
 
 type config struct {
-	Ip              string `yaml:"mqtt_ip"`
-	Port            string `yaml:"mqtt_port"`
-	User            string `yaml:"mqtt_user"`
-	Password        string `yaml:"mqtt_password"`
-	SSL             bool   `yaml:"mqtt_ssl"`
-	Hostname        string `yaml:"hostname"`
-	Topic           string `yaml:"mqtt_topic"`
-	DiscoveryPrefix string `yaml:"discovery_prefix"`
+	IP               string `yaml:"mqtt_ip"`
+	Port             string `yaml:"mqtt_port"`
+	User             string `yaml:"mqtt_user"`
+	Password         string `yaml:"mqtt_password"`
+	SSL              bool   `yaml:"mqtt_ssl"`
+	Hostname         string `yaml:"hostname"`
+	Topic            string `yaml:"mqtt_topic"`
+	DiscoveryPrefix  string `yaml:"discovery_prefix"`
+	IdleActivityTime int    `yaml:"idle_activity_time"` // in seconds
 }
 
 func (c *config) getConfig() *config {
@@ -147,7 +150,7 @@ func (c *config) getConfig() *config {
 		log.Fatal("No data in config file")
 	}
 
-	if c.Ip == "" {
+	if c.IP == "" {
 		log.Fatal("Must specify mqtt_ip in mac2mqtt.yaml")
 	}
 
@@ -220,7 +223,7 @@ func NewApplication() (*Application, error) {
 
 // validateConfig validates the application configuration
 func (app *Application) validateConfig() error {
-	if app.config.Ip == "" {
+	if app.config.IP == "" {
 		return fmt.Errorf("mqtt_ip is required")
 	}
 	if app.config.Port == "" {
@@ -317,6 +320,7 @@ func getCommandOutput(name string, arg ...string) string {
 func getCaffeinateStatus() bool {
 	cmd := "/bin/ps ax | /usr/bin/grep caffeinate | /usr/bin/grep -v grep"
 	output, err := exec.Command("/bin/sh", "-c", cmd).Output()
+	//revive:disable-next-line
 	if err != nil {
 		//log.Fatal(err)
 	}
@@ -329,6 +333,7 @@ func getMuteStatus() bool {
 	log.Println("Getting mute status")
 	output := getCommandOutput("/usr/bin/osascript", "-e", "output muted of (get volume settings)")
 	b, err := strconv.ParseBool(output)
+	//revive:disable-next-line
 	if err != nil {
 		// Continue to fallback method
 	}
@@ -719,6 +724,7 @@ func (app *Application) updateNowPlaying(client mqtt.Client) {
 		if _, ok := err.(*MediaControlError); ok {
 			log.Printf("Media Control is not available: %v", err)
 			return
+			//revive:disable-next-line
 		} else {
 			log.Printf("Error getting media info: %v", err)
 			return
@@ -1140,7 +1146,7 @@ func (app *Application) connectHandler(client mqtt.Client) {
 	app.setUserActivityState(client, "inactive") // Initial state
 }
 
-func (app *Application) connectLostHandler(client mqtt.Client, err error) {
+func (app *Application) connectLostHandler(_ mqtt.Client, err error) {
 	log.Printf("Disconnected from MQTT: %v", err)
 
 	// Check if it's a network issue
@@ -1160,9 +1166,9 @@ func (app *Application) getMQTTClient() error {
 func (app *Application) isNetworkReachable() bool {
 	// Try to connect to the broker with a short timeout
 	timeout := 5 * time.Second
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(app.config.Ip, app.config.Port), timeout)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(app.config.IP, app.config.Port), timeout)
 	if err != nil {
-		log.Printf("Network check failed: MQTT broker %s:%s is not reachable (%v)", app.config.Ip, app.config.Port, err)
+		log.Printf("Network check failed: MQTT broker %s:%s is not reachable (%v)", app.config.IP, app.config.Port, err)
 		return false
 	}
 	conn.Close()
@@ -1188,7 +1194,7 @@ func (app *Application) getMQTTClientWithRetry(retryCount int) error {
 	if app.config.SSL {
 		protocol = "ssl"
 	}
-	brokerURL := fmt.Sprintf("%s://%s:%s", protocol, app.config.Ip, app.config.Port)
+	brokerURL := fmt.Sprintf("%s://%s:%s", protocol, app.config.IP, app.config.Port)
 	log.Printf("Connecting to MQTT broker: %s", brokerURL)
 
 	opts.AddBroker(brokerURL)
@@ -1727,7 +1733,7 @@ func getPublicIP() (string, error) {
 	// Use DNS over HTTPS to query Cloudflare's whoami service
 	resolver := &net.Resolver{
 		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			d := net.Dialer{
 				Timeout: 5 * time.Second,
 			}
@@ -2158,7 +2164,7 @@ func (app *Application) Run() error {
 	log.Printf("Working directory: %s", getWorkingDirectory())
 	log.Printf("Hostname set to: %s", app.hostname)
 	log.Printf("Discovery Prefix: %s", app.config.DiscoveryPrefix)
-	log.Printf("MQTT Broker: %s:%s", app.config.Ip, app.config.Port)
+	log.Printf("MQTT Broker: %s:%s", app.config.IP, app.config.Port)
 	log.Printf("MQTT Topic: %s", app.topic)
 
 	// Initialize displays before MQTT connection
