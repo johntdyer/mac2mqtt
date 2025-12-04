@@ -180,6 +180,10 @@ func NewApplication() (*Application, error) {
 	app.config = &config{}
 	app.config.getConfig()
 
+	if app.config.IdleActivityTime == 0 {
+		app.config.IdleActivityTime = 10 // default 10 seconds
+	}
+
 	// Set hostname
 	if app.config.Hostname == "" {
 		app.hostname = getHostname()
@@ -1099,6 +1103,12 @@ func (app *Application) updateDisplayBrightness(client mqtt.Client) {
 	for _, display := range app.displays {
 		brightness, err := getDisplayBrightness(display.DisplayID)
 		if err != nil {
+			// skip type DisplayGroup
+			if display.DeviceType == "DisplayGroup" {
+				continue
+
+			}
+
 			// Only log error once per minute to avoid spam for unavailable displays (e.g., closed laptop)
 			if display.Name == "Built-in Display" || strings.Contains(display.Name, "Built-in") {
 				// Silently skip built-in display when unavailable (laptop closed)
