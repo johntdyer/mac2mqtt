@@ -3,6 +3,6 @@ mqtt_port: 1883
 mqtt_user: hass
 mqtt_password: password
 mqtt_ssl: false
-hostname: macbook-air-2
+# hostname: macbook-air-2
 mqtt_topic: iot/MyMac
 idle_activity_time: 30

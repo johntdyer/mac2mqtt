@@ -5,11 +5,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -116,7 +118,9 @@ type Application struct {
 	userActivityState string    // "active" or "inactive"
 	activityMutex     sync.RWMutex
 	activityTimer     *time.Timer
-	lastCPU           sigar.Cpu // for CPU percentage calculation
+	activityCtx       context.Context    // Context for cancelling activity monitoring
+	activityCancel    context.CancelFunc // Cancel function for activity monitoring
+	lastCPU           sigar.Cpu          // for CPU percentage calculation
 	cpuMutex          sync.RWMutex
 }
 
@@ -1013,6 +1017,16 @@ func getSystemIdleTime() (int, error) {
 
 // startUserActivityMonitoring starts monitoring user activity using system idle time
 func (app *Application) startUserActivityMonitoring(client mqtt.Client) {
+	// Cancel existing monitoring if running
+	app.activityMutex.Lock()
+	if app.activityCancel != nil {
+		app.activityCancel()
+	}
+	// Create new context
+	app.activityCtx, app.activityCancel = context.WithCancel(context.Background())
+	ctx := app.activityCtx
+	app.activityMutex.Unlock()
+
 	log.Println("Starting user activity monitoring...")
 
 	go func() {
@@ -1023,30 +1037,34 @@ func (app *Application) startUserActivityMonitoring(client mqtt.Client) {
 		}()
 
 		var lastIdleTime int = -1
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
 
 		for {
-			// Check if client is still connected
-			if client == nil || !client.IsConnected() {
-				time.Sleep(5 * time.Second)
-				continue
-			}
+			select {
+			case <-ctx.Done():
+				log.Println("Stopping user activity monitoring (context cancelled)")
+				return
+			case <-ticker.C:
+				// Check if client is still connected
+				if client == nil || !client.IsConnected() {
+					continue
+				}
 
-			idleTime, err := getSystemIdleTime()
-			if err != nil {
-				log.Printf("Error getting system idle time: %v", err)
-				time.Sleep(2 * time.Second)
-				continue
-			}
+				idleTime, err := getSystemIdleTime()
+				if err != nil {
+					log.Printf("Error getting system idle time: %v", err)
+					continue
+				}
 
-			// If idle time decreased or is very small, user is active
-			if idleTime < lastIdleTime || idleTime < 2 {
-				app.resetActivityTimer(client)
-			}
+				// If idle time decreased or is very small, user is active
+				if idleTime < lastIdleTime || idleTime < 2 {
+					app.resetActivityTimer(client)
+				}
 
-			lastIdleTime = idleTime
-			client.Publish(app.getTopicPrefix()+"/status/idle_time_seconds", 0, false, fmt.Sprintf("%d", idleTime))
-			// Check every 500ms for responsive detection
-			time.Sleep(500 * time.Millisecond)
+				lastIdleTime = idleTime
+				client.Publish(app.getTopicPrefix()+"/status/idle_time_seconds", 0, false, fmt.Sprintf("%d", idleTime))
+			}
 		}
 	}()
 
@@ -2396,7 +2414,18 @@ func (app *Application) validateKeepAwakeInput(payload string) (bool, error) {
 }
 
 func main() {
+	// Parse command line flags
+	enablePprof := flag.Bool("pprof", false, "Enable pprof profiling on :6060")
+	flag.Parse()
+
 	// Create and initialize the application
+	// we need a webserver to get the pprof webserver
+	if *enablePprof {
+		go func() {
+			log.Println("Starting pprof server on :6060")
+			log.Println(http.ListenAndServe(":6060", nil))
+		}()
+	}
 	app, err := NewApplication()
 	if err != nil {
 		log.Fatal("Failed to initialize application: ", err)
