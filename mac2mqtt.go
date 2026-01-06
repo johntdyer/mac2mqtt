@@ -27,6 +27,8 @@ import (
 	sigar "github.com/cloudfoundry/gosigar"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	// Using my fork until #9 is resolved ( https://github.com/antonfisher/go-media-devices-state/pull/9 )
 	mediadevices "github.com/antonfisher/go-media-devices-state"
 )
@@ -2416,6 +2418,8 @@ func (app *Application) validateKeepAwakeInput(payload string) (bool, error) {
 func main() {
 	// Parse command line flags
 	enablePprof := flag.Bool("pprof", false, "Enable pprof profiling on :6060")
+	enableMetrics := flag.Bool("metrics", false, "Enable prometheus metrics")
+	metricsPort := flag.String("metrics-port", "9100", "Port for prometheus metrics (default: 9100)")
 	flag.Parse()
 
 	// Create and initialize the application
@@ -2424,6 +2428,15 @@ func main() {
 		go func() {
 			log.Println("Starting pprof server on :6060")
 			log.Println(http.ListenAndServe(":6060", nil))
+		}()
+	}
+
+	// Start Prometheus metrics server
+	if *enableMetrics {
+		go func() {
+			log.Printf("Starting prometheus metrics server on :%s", *metricsPort)
+			http.Handle("/metrics", promhttp.Handler())
+			log.Println(http.ListenAndServe(":"+*metricsPort, nil))
 		}()
 	}
 	app, err := NewApplication()
